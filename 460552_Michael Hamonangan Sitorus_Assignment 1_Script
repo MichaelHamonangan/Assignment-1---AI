@@ -1,0 +1,306 @@
+;;;======================================================
+;;;	Expert system kesehatan Lambung
+;;;
+;;;     Michael Hamonangan Sitorus
+;;; 	20/460552/TK/51141
+;;; 	Teknologi Informasi 2020
+;;; 
+;;;     To execute, merely load, reset and run.
+;;;======================================================
+
+(defmodule MAIN (export ?ALL))
+
+;;****************
+;;* DEFFUNCTIONS *
+;;****************
+
+(deffunction MAIN::ask-question (?question ?allowed-values)
+   (printout t ?question)
+   (bind ?answer (read))
+   (if (lexemep ?answer) then (bind ?answer (lowcase ?answer)))
+   (while (not (member ?answer ?allowed-values)) do
+      (printout t ?question)
+      (bind ?answer (read))
+      (if (lexemep ?answer) then (bind ?answer (lowcase ?answer))))
+   ?answer)
+
+;;*****************
+;;* INITIAL STATE *
+;;*****************
+
+(deftemplate MAIN::attribute
+   (slot name)
+   (slot value)
+   (slot certainty (default 100.0)))
+
+(defrule MAIN::start
+  (declare (salience 10000))
+  =>
+  (set-fact-duplication TRUE)
+  (focus QUESTIONS GEJALA-PENYAKIT LAMBUNG PRINT-RESULTS))
+
+(defrule MAIN::combine-certainties ""
+  (declare (salience 100)
+           (auto-focus TRUE))
+  ?rem1 <- (attribute (name ?rel) (value ?val) (certainty ?per1))
+  ?rem2 <- (attribute (name ?rel) (value ?val) (certainty ?per2))
+  (test (neq ?rem1 ?rem2))
+  =>
+  (retract ?rem1)
+  (modify ?rem2 (certainty (/ (- (* 100 (+ ?per1 ?per2)) (* ?per1 ?per2)) 100))))
+  
+;;******************
+;;* RULES QUESTION *
+;;******************
+
+(defmodule QUESTIONS (import MAIN ?ALL) (export ?ALL))
+
+(deftemplate QUESTIONS::question
+   (slot attribute (default ?NONE))
+   (slot the-question (default ?NONE))
+   (multislot valid-answers (default ?NONE))
+   (slot already-asked (default FALSE))
+   (multislot precursors (default ?DERIVE)))
+   
+(defrule QUESTIONS::ask-a-question
+   ?f <- (question (already-asked FALSE)
+                   (precursors)
+                   (the-question ?the-question)
+                   (attribute ?the-attribute)
+                   (valid-answers $?valid-answers))
+   =>
+   (modify ?f (already-asked TRUE))
+   (assert (attribute (name ?the-attribute)
+                      (value (ask-question ?the-question ?valid-answers)))))
+
+(defrule QUESTIONS::precursor-is-satisfied
+   ?f <- (question (already-asked FALSE)
+                   (precursors ?name is ?value $?rest))
+         (attribute (name ?name) (value ?value))
+   =>
+   (if (eq (nth 1 ?rest) and) 
+    then (modify ?f (precursors (rest$ ?rest)))
+    else (modify ?f (precursors ?rest))))
+
+(defrule QUESTIONS::precursor-is-not-satisfied
+   ?f <- (question (already-asked FALSE)
+                   (precursors ?name is-not ?value $?rest))
+         (attribute (name ?name) (value ~?value))
+   =>
+   (if (eq (nth 1 ?rest) and) 
+    then (modify ?f (precursors (rest$ ?rest)))
+    else (modify ?f (precursors ?rest))))
+
+;;*********************
+;;* LAMBUNG QUESTIONS *
+;;*********************
+
+(defmodule LAMBUNG-QUESTIONS (import QUESTIONS ?ALL))
+
+(deffacts LAMBUNG-QUESTIONS::question-attributes
+  (question (attribute kram-perut)
+            (the-question "Apakah pasien mengalami keram perut?(ya/tidak) ")
+            (valid-answers ya tidak))
+  (question (attribute nafsu-makan)
+            (the-question "Apakah nafsu makan pasien berkurang karena cepat merasa kenyang? (ya/tidak) ")
+            (valid-answers ya tidak))
+  (question (attribute rasa-muntah)
+            (precursors nafsu-makan is ya)
+            (the-question "Apakah pasien seringkali merasa ingin muntah setelah makan?(ya/terkadang/tidak) ")
+            (valid-answers ya terkadang tidak))
+  (question (attribute nyeri-dada)
+            (the-question "Apakah pasien mengalami rasa nyeri pada dada?(ya/tidak) ")
+            (valid-answers ya tidak))
+  (question (attribute rasa-mual)
+            (precursors nyeri-dada is ya)
+            (the-question "Apakah pasien seringkali merasa mual?(ya/terkadang/tidak) ")
+            (valid-answers ya terkadang tidak)))
+ 
+;;**************
+;; RULES Module*
+;;**************
+
+(defmodule RULES (import MAIN ?ALL) (export ?ALL))
+
+(deftemplate RULES::rule
+  (slot certainty (default 100.0))
+  (multislot if)
+  (multislot then))
+
+(defrule RULES::throw-away-ands-in-antecedent
+  ?f <- (rule (if and $?rest))
+  =>
+  (modify ?f (if ?rest)))
+
+(defrule RULES::throw-away-ands-in-consequent
+  ?f <- (rule (then and $?rest))
+  =>
+  (modify ?f (then ?rest)))
+
+(defrule RULES::remove-is-condition-when-satisfied
+  ?f <- (rule (certainty ?c1) 
+              (if ?attribute is ?value $?rest))
+  (attribute (name ?attribute) 
+             (value ?value) 
+             (certainty ?c2))
+  =>
+  (modify ?f (certainty (min ?c1 ?c2)) (if ?rest)))
+
+(defrule RULES::remove-is-not-condition-when-satisfied
+  ?f <- (rule (certainty ?c1) 
+              (if ?attribute is-not ?value $?rest))
+  (attribute (name ?attribute) (value ~?value) (certainty ?c2))
+  =>
+  (modify ?f (certainty (min ?c1 ?c2)) (if ?rest)))
+
+(defrule RULES::perform-rule-consequent-with-certainty
+  ?f <- (rule (certainty ?c1) 
+              (if) 
+              (then ?attribute is ?value with certainty ?c2 $?rest))
+  =>
+  (modify ?f (then ?rest))
+  (assert (attribute (name ?attribute) 
+                     (value ?value)
+                     (certainty (/ (* ?c1 ?c2) 100)))))
+
+(defrule RULES::perform-rule-consequent-without-certainty
+  ?f <- (rule (certainty ?c1)
+              (if)
+              (then ?attribute is ?value $?rest))
+  (test (or (eq (length$ ?rest) 0)
+            (neq (nth 1 ?rest) with)))
+  =>
+  (modify ?f (then ?rest))
+  (assert (attribute (name ?attribute) (value ?value) (certainty ?c1))))
+
+;;*************************
+;;* RULES GEJALA PENYAKIT * 
+;;*************************
+
+(defmodule GEJALA-PENYAKIT (import RULES ?ALL)
+                            (import QUESTIONS ?ALL)
+                            (import MAIN ?ALL))
+
+(defrule GEJALA-PENYAKIT::startit => (focus RULES))
+
+(deffacts lambung-rules
+
+  (rule (if nyeri-dada is tidak)
+        (then lambung-asam is tinggi with certainty 10 and
+              lambung-asam is sedang with certainty 30 and
+              lambung-asam is rendah with certainty 80))
+
+  (rule (if nyeri-dada is ya and 
+            rasa-mual is ya)
+        (then lambung-asam is tinggi with certainty 80 and
+              lambung-asam is sedang with certainty 30 and
+              lambung-asam is rendah with certainty 10))
+
+  (rule (if nyeri-dada is ya and 
+            rasa-mual is terkadang)
+        (then lambung-asam is tinggi with certainty 40 and
+              lambung-asam is sedang with certainty 60 and
+              lambung-asam is rendah with certainty 20))
+
+  (rule (if nyeri-dada is ya and 
+            rasa-mual is tidak)
+        (then lambung-asam is tinggi with certainty 20 and
+              lambung-asam is sedang with certainty 40 and
+              lambung-asam is rendah with certainty 60))
+
+  (rule (if nafsu-makan is tidak)
+        (then lambung-dinding is prima with certainty 80 and
+              lambung-dinding is terluka with certainty 30 and
+              lambung-dinding is sekarat with certainty 10))
+
+  (rule (if nafsu-makan is ya and
+            rasa-muntah is ya)
+        (then lambung-dinding is prima with certainty 10 and
+              lambung-dinding is terluka with certainty 30 and
+              lambung-dinding is sekarat with certainty 80))
+
+  (rule (if nafsu-makan is ya and 
+            rasa-muntah is terkadang)
+        (then lambung-dinding is prima with certainty 20 and
+              lambung-dinding is terluka with certainty 60 and
+              lambung-dinding is sekarat with certainty 40))
+
+  (rule (if nafsu-makan is ya and 
+            rasa-muntah is tidak)
+        (then lambung-dinding is prima with certainty 60 and
+              lambung-dinding is terluka with certainty 40 and
+              lambung-dinding is sekarat with certainty 20))
+
+  (rule (if kram-perut is ya)
+        (then lambung-otot is prima with certainty 20 and
+              lambung-otot is terluka with certainty 80))
+
+  (rule (if kram-perut is tidak)
+        (then lambung-otot is prima with certainty 80 and
+              lambung-otot is terluka with certainty 20))
+)
+
+;;****************************
+;;* RULES PEMILIHAN PENYAKIT *
+;;****************************
+
+(defmodule LAMBUNG (import MAIN ?ALL))
+
+(deffacts any-attributes
+  (attribute (name lambung-asam) (value any))
+  (attribute (name lambung-dinding) (value any))
+  (attribute (name lambung-otot) (value any)))
+
+(deftemplate LAMBUNG::unit
+  (slot name (default ?NONE))
+  (multislot asam (default any))
+  (multislot dinding (default any))
+  (multislot otot (default any)))
+
+(deffacts LAMBUNG::the-wine-list 
+  (unit (name GERD) (asam tinggi)(dinding prima))
+  (unit (name Gastritis) (asam tinggi)(dinding sekarat))
+  (unit (name Gastroparesis) (asam rendah) (dinding prima) (otot terluka))
+  (unit (name Dispepsia) (asam sedang)(dinding terluka)(otot prima)))
+  
+(defrule LAMBUNG::generate-wines
+  (unit (name ?name)
+        (asam $? ?a $?)
+        (dinding $? ?d $?)
+        (otot $? ?o $?))
+  (attribute (name lambung-asam) (value ?a) (certainty ?certainty-1))
+  (attribute (name lambung-dinding) (value ?d) (certainty ?certainty-2))
+  (attribute (name lambung-otot) (value ?o) (certainty ?certainty-3))
+  =>
+  (assert (attribute (name unit) (value ?name)
+                     (certainty (min ?certainty-1 ?certainty-2 ?certainty-3)))))
+
+;;*********************************
+;;* RULES PRINT DIAGNOSA PENYAKIT *
+;;*********************************
+
+(defmodule PRINT-RESULTS (import MAIN ?ALL))
+
+(defrule PRINT-RESULTS::header ""
+   (declare (salience 10))
+   =>
+   (printout t crlf crlf)
+   (printout t "        DIAGNOSA PENYAKIT LAMBUNG")
+   (printout t crlf crlf)
+   (printout t " PENYAKIT                  CERTAINTY" )
+   (printout t crlf crlf)
+   (printout t " -------------------------------" )
+   (printout t crlf crlf)
+   (assert (phase print-diagnosa)))
+
+(defrule PRINT-RESULTS::print-diagnosa""
+  ?rem <- (attribute (name unit) (value ?name) (certainty ?per))		  
+  (not (attribute (name unit) (certainty ?per1&:(> ?per1 ?per))))
+  =>
+  (retract ?rem)
+  (format t " %-24s %2d%%%n" ?name ?per))
+
+(defrule PRINT-RESULTS::end-spaces ""
+   (not (attribute (name unit)))
+   =>
+   (printout t crlf crlf))
